@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>KVB Stadtbahn Live</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@400;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<style>
+/* Layout: Vollbild-3D-Karte, oben Linienleiste, Detailblatt unten (mobil) bzw. rechts (Desktop) */
+:root{
+  --bg:#eef0ee; --panel:#ffffff; --fg:#1b1f1d; --muted:#5d6661; --line:#d9ddd9;
+  --accent:#e2001a;
+  --ok:#1f8a4c; --warn:#c77700; --late:#d0261b; --plan:#7b8480;
+  --font:"IBM Plex Sans Condensed","Arial Narrow",Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#101312; --panel:#1b1f1d; --fg:#e8ece9; --muted:#9aa49f; --line:#2f3532;
+    --ok:#45c27a; --warn:#f0a43a; --late:#ff5a4d; --plan:#8b958f; color-scheme:dark }
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.35 var(--font);display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:12px;padding:10px max(14px,env(safe-area-inset-left)) 8px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+h1{font-size:18px;margin:0;font-weight:700;display:flex;align-items:center;gap:8px}
+h1 .dot{width:10px;height:10px;border-radius:50%;background:var(--accent);animation:pulse 2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(226,0,26,.5)}70%{box-shadow:0 0 0 8px rgba(226,0,26,0)}100%{box-shadow:0 0 0 0 rgba(226,0,26,0)}}
+@media (prefers-reduced-motion:reduce){h1 .dot{animation:none}}
+.opts{display:flex;gap:14px;font-size:13px;color:var(--muted);flex-wrap:wrap}
+.opts label{display:flex;align-items:center;gap:5px;cursor:pointer}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.seg button{border:0;background:transparent;color:var(--muted);font:700 13px var(--font);padding:5px 11px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--fg);color:var(--panel)}
+.opts label.dis{opacity:.45;pointer-events:none}
+#status{font:12px var(--mono);color:var(--muted);margin-left:auto;text-align:right}
+#lines{display:flex;gap:6px;overflow-x:auto;padding:8px max(14px,env(safe-area-inset-left));background:var(--panel);border-bottom:1px solid var(--line);scrollbar-width:none}
+#lines::-webkit-scrollbar{display:none}
+.chip{flex:0 0 auto;min-width:34px;height:30px;padding:0 9px;border-radius:6px;border:2px solid var(--c);background:var(--c);color:#fff;font:700 14px var(--font);cursor:pointer}
+.chip.off{background:transparent;color:var(--muted);border-color:var(--line)}
+.chip.all{--c:var(--fg);color:var(--panel)}
+main{position:relative;flex:1;min-height:0}
+#map{position:absolute;inset:0;background:var(--bg)}
+.legend{position:absolute;left:10px;bottom:calc(30px + env(safe-area-inset-bottom));z-index:5;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12px;display:flex;gap:10px;flex-wrap:wrap;max-width:calc(100% - 20px)}
+.legend span{display:flex;align-items:center;gap:4px}
+.legend i{width:10px;height:10px;border-radius:2px;display:inline-block}
+
+/* Beschriftung über den Bahnen */
+.lbl{pointer-events:none;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-left:4px solid var(--c);border-radius:5px;padding:2px 6px;font:12px/1.25 var(--font);white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.25);transform:translateY(-14px)}
+.lbl b{font-weight:700}
+.t{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.d-ok{color:var(--ok)} .d-warn{color:var(--warn)} .d-late{color:var(--late)} .d-plan{color:var(--plan)}
+
+/* Detailblatt */
+#sheet{position:absolute;z-index:6;background:var(--panel);border:1px solid var(--line);box-shadow:0 4px 24px rgba(0,0,0,.25);display:flex;flex-direction:column;max-height:60%;left:0;right:0;bottom:0;border-radius:14px 14px 0 0;padding-bottom:env(safe-area-inset-bottom)}
+@media (min-width:760px){#sheet{left:auto;right:12px;top:12px;bottom:auto;width:340px;max-height:calc(100% - 24px);border-radius:12px}}
+.sh-head{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.badge{min-width:38px;height:30px;border-radius:6px;background:var(--c);color:#fff;font:700 17px var(--font);display:flex;align-items:center;justify-content:center;padding:0 6px}
+.sh-title{flex:1;min-width:0}
+.sh-title b{display:block;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sh-title small{color:var(--muted)}
+.btn{border:1px solid var(--line);background:transparent;color:var(--fg);border-radius:6px;padding:5px 9px;font:600 13px var(--font);cursor:pointer}
+.btn.on{background:var(--fg);color:var(--panel);border-color:var(--fg)}
+#close{border:0;background:transparent;color:var(--muted);font-size:24px;cursor:pointer;line-height:1;padding:4px 8px}
+.next{padding:12px 14px;display:grid;grid-template-columns:1fr auto;gap:2px 10px;border-bottom:1px solid var(--line)}
+.next .cap{grid-column:1/-1;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+.next .stop{font-size:18px;font-weight:600}
+.next .time{font:600 18px var(--mono)}
+.next .dly{grid-column:1/-1;font-weight:600}
+.stops{overflow-y:auto;padding:6px 14px 12px;margin:0;list-style:none}
+.stops li{display:grid;grid-template-columns:1fr auto 56px;gap:8px;padding:6px 0;border-bottom:1px dashed var(--line);font-size:14px}
+.stops li:last-child{border-bottom:0}
+.stops .dl{text-align:right;font-size:13px}
+.muted{color:var(--muted);font-size:13px;padding:10px 14px}
+footer{font-size:11px;color:var(--muted);padding:5px max(14px,env(safe-area-inset-left));background:var(--panel);border-top:1px solid var(--line)}
+footer a{color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="dot" aria-hidden="true"></span>KVB Live</h1>
+  <div class="seg" role="group" aria-label="Ansicht">
+    <button type="button" id="mode3d" aria-pressed="false">3D</button>
+    <button type="button" id="mode2d" aria-pressed="false">2D (sparsam)</button>
+  </div>
+  <div class="opts">
+    <label><input type="checkbox" id="optLabels" checked> Ankunftszeiten</label>
+    <label><input type="checkbox" id="optPlan" checked> Bahnen ohne Echtzeit</label>
+    <label id="lblBuildings"><input type="checkbox" id="optBuildings" checked> Gebäude</label>
+  </div>
+  <div id="status">Lade Karte…</div>
+</header>
+<nav id="lines" aria-label="Linienfilter"></nav>
+<main>
+  <div id="map"></div>
+  <div class="legend">
+    <span>Dach:</span>
+    <span><i style="background:var(--ok)"></i>pünktlich</span>
+    <span><i style="background:var(--warn)"></i>+1–2 min</span>
+    <span><i style="background:var(--late)"></i>≥ +3 min</span>
+    <span><i style="background:var(--plan)"></i>nur Fahrplan</span>
+  </div>
+  <section id="sheet" hidden></section>
+</main>
+<footer>
+  Fahrplandaten: <a href="https://transitous.org/sources/" target="_blank" rel="noopener">Transitous / DELFI / VRS</a> ·
+  Karte: <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a>, © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> ·
+  Positionen sind aus Echtzeit-Fahrzeiten berechnet, nicht per GPS gemessen. Rechtsklick + Ziehen dreht und neigt die Karte.
+</footer>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script>
+"use strict";
+/* ---------- Konfiguration ---------- */
+const API = "https://api.transitous.org";
+const BBOX = { s: 50.72, w: 6.78, n: 51.07, e: 7.20 };   // Köln inkl. Strecken nach Bonn, Frechen, Bensberg, Leverkusen
+const KVB_LINES = ["1","3","4","5","7","9","12","13","15","16","17","18"];
+const FALLBACK_COLORS = {"1":"#e2001a","3":"#f08cb4","4":"#e3007d","5":"#8c4b9d","7":"#e85c0d","9":"#f39200",
+  "12":"#7ab51d","13":"#8b6c3f","15":"#a6ce39","16":"#009ee0","17":"#4ec3e0","18":"#0062a5"};
+const POLL_MS = 20000, LIVE_WINDOW_MIN = 4;
+const DARK = matchMedia("(prefers-color-scheme: dark)").matches;
+const STYLE = "https://tiles.openfreemap.org/styles/" + (DARK ? "dark" : "positron");
+const STYLE_FALLBACK = "https://tiles.openfreemap.org/styles/liberty";
+const STATUS_COL = DARK ? { ok:"#45c27a", warn:"#f0a43a", late:"#ff5a4d", plan:"#8b958f" }
+                        : { ok:"#1f8a4c", warn:"#e08a00", late:"#d0261b", plan:"#9aa39e" };
+
+/* ---------- Zustand ---------- */
+let mapTripsVersion = null, tripVersion = null;
+let segsByTrip = new Map();
+const netFeatures = new Map(), stopFeatures = new Map();
+const enabledLines = new Set(KVB_LINES), lineColors = {};
+const labels = new Map();
+let selectedTrip = null, tripDetail = null, follow = false, lastOk = null, errorMsg = "";
+let mapReady = false, netDirty = false, triedFallback = false;
+/* Ansicht: 3D oder 2D. Auf Handys startet die sparsame 2D-Ansicht, die Wahl wird gemerkt. */
+let mode = (() => {
+  try { const m = localStorage.getItem("kvb-mode"); if (m === "2d" || m === "3d") return m; } catch (_) {}
+  return matchMedia("(pointer: coarse)").matches && Math.min(screen.width, screen.height) < 700 ? "2d" : "3d";
+})();
+
+/* ---------- Hilfsfunktionen ---------- */
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
+const t = v => v ? new Date(v).getTime() : NaN;
+const hhmm = ms => isNaN(ms) ? "–" : new Date(ms).toLocaleTimeString("de-DE", { hour:"2-digit", minute:"2-digit", timeZone:"Europe/Berlin" });
+const lineOf = seg => {
+  const tr = (seg.trips && seg.trips[0]) || {};
+  const m = String(tr.routeShortName || seg.routeShortName || tr.displayName || seg.displayName || "").match(/\d+/);
+  return m ? m[0] : null;
+};
+const isRail = mode => !mode || (/TRAM|SUBWAY|LIGHT|METRO|RAIL/i.test(mode) && !/REGIONAL|LONG|HIGHSPEED|NIGHT_RAIL|SUBURBAN/i.test(mode));
+const colorOf = (line, seg) => {
+  if (!lineColors[line]) {
+    let c = seg && seg.routeColor ? String(seg.routeColor) : "";
+    if (c && !c.startsWith("#")) c = "#" + c;
+    lineColors[line] = /^#[0-9a-f]{6}$/i.test(c) && c.toLowerCase() !== "#ffffff" ? c : (FALLBACK_COLORS[line] || "#555");
+  }
+  return lineColors[line];
+};
+function delayInfo(actual, sched, realTime) {
+  if (!realTime || isNaN(sched) || isNaN(actual))
+    return { cls:"d-plan", txt: realTime ? "Abweichung unbekannt" : "keine Echtzeit, Fahrplanzeit", col: STATUS_COL.plan, min:null };
+  const m = Math.round((actual - sched) / 60000);
+  if (m === 0) return { cls:"d-ok", txt:"pünktlich", col:STATUS_COL.ok, min:0 };
+  if (m < 0)   return { cls:"d-ok", txt:`${m} min (früher)`, col:STATUS_COL.ok, min:m };
+  if (m <= 2)  return { cls:"d-warn", txt:`+${m} min Verspätung`, col:STATUS_COL.warn, min:m };
+  return { cls:"d-late", txt:`+${m} min Verspätung`, col:STATUS_COL.late, min:m };
+}
+
+/* Google-Polyline dekodieren (Genauigkeit 5/6/7 wird anhand des Startpunkts erkannt) */
+function decodeRaw(str, prec) {
+  let i = 0, lat = 0, lng = 0; const f = Math.pow(10, prec), out = [];
+  while (i < str.length) {
+    for (const k of [0, 1]) {
+      let b, shift = 0, res = 0;
+      do { b = str.charCodeAt(i++) - 63; res |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20 && i <= str.length);
+      const d = (res & 1) ? ~(res >> 1) : (res >> 1);
+      if (k === 0) lat += d; else lng += d;
+    }
+    out.push([lat / f, lng / f]);
+  }
+  return out;
+}
+function decodePoly(p, from) {
+  if (!p) return null;
+  const str = typeof p === "string" ? p : p.points;
+  if (!str) return null;
+  for (const pr of (p.precision ? [p.precision] : [5, 6, 7])) {
+    const pts = decodeRaw(str, pr);
+    if (pts.length && (!from || (Math.abs(pts[0][0] - from.lat) < 0.05 && Math.abs(pts[0][1] - from.lon) < 0.05))) return pts;
+  }
+  return null;
+}
+/* Punkt bei Anteil u entlang der Linie + Fahrtrichtung (in lokalen Metern) */
+function pointAlong(pts, u) {
+  if (!pts || pts.length < 2) return { p: pts[0], dir: [0, 1] };
+  const cos = Math.cos(pts[0][0] * Math.PI / 180), d = [0];
+  for (let i = 1; i < pts.length; i++)
+    d.push(d[i-1] + Math.hypot((pts[i][1] - pts[i-1][1]) * cos, pts[i][0] - pts[i-1][0]));
+  const target = d[d.length - 1] * Math.min(1, Math.max(0, u));
+  for (let i = 1; i < pts.length; i++) {
+    if (d[i] >= target && d[i] > d[i-1]) {
+      const f = (target - d[i-1]) / (d[i] - d[i-1]);
+      return { p: [pts[i-1][0] + f * (pts[i][0] - pts[i-1][0]), pts[i-1][1] + f * (pts[i][1] - pts[i-1][1])],
+               dir: [(pts[i][1] - pts[i-1][1]) * cos, pts[i][0] - pts[i-1][0]] };
+    }
+  }
+  const n = pts.length;
+  return { p: pts[n-1], dir: [(pts[n-1][1] - pts[n-2][1]) * cos, pts[n-1][0] - pts[n-2][0]] };
+}
+
+/* ---------- API ---------- */
+async function getJSON(url) {
+  const r = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!r.ok) { const e = new Error("HTTP " + r.status); e.status = r.status; throw e; }
+  return r.json();
+}
+async function mapTrips(b, start, end) {
+  let lastErr;
+  for (const v of (mapTripsVersion ? [mapTripsVersion] : ["v5", "v4", "v1"])) {
+    const url = `${API}/api/${v}/map/trips?zoom=15&min=${b.s},${b.w}&max=${b.n},${b.e}` +
+      `&startTime=${encodeURIComponent(new Date(start).toISOString())}&endTime=${encodeURIComponent(new Date(end).toISOString())}`;
+    try {
+      const data = await getJSON(url);
+      mapTripsVersion = v;
+      return Array.isArray(data) ? data : (data.segments || data.trips || []);
+    } catch (e) { lastErr = e; if (e.status && ![404, 400].includes(e.status)) throw e; }
+  }
+  throw lastErr;
+}
+async function fetchArea(b, start, end, depth = 0) {
+  try { return await mapTrips(b, start, end); }
+  catch (e) {
+    if ((e.status === 422 || e.status === 413) && depth < 3) {
+      const mLat = (b.s + b.n) / 2, mLon = (b.w + b.e) / 2;
+      const parts = [{ s:b.s, w:b.w, n:mLat, e:mLon }, { s:b.s, w:mLon, n:mLat, e:b.e },
+                     { s:mLat, w:b.w, n:b.n, e:mLon }, { s:mLat, w:mLon, n:b.n, e:b.e }];
+      return (await Promise.all(parts.map(p => fetchArea(p, start, end, depth + 1)))).flat();
+    }
+    throw e;
+  }
+}
+async function fetchTripDetail(tripId) {
+  for (const v of (tripVersion ? [tripVersion] : ["v5", "v4", "v2", "v1"])) {
+    try { const d = await getJSON(`${API}/api/${v}/trip?tripId=${encodeURIComponent(tripId)}`); tripVersion = v; return d; }
+    catch (e) { if (e.status && ![404, 400].includes(e.status)) return null; }
+  }
+  return null;
+}
+
+/* ---------- Daten verarbeiten ---------- */
+function ingest(segments, merge) {
+  const byTrip = new Map(), seen = new Set();
+  for (const s of segments) {
+    if (!isRail(s.mode)) continue;
+    const line = lineOf(s);
+    if (!line || !KVB_LINES.includes(line)) continue;
+    const tripId = (s.trips && s.trips[0] && s.trips[0].tripId) || s.tripId;
+    if (!tripId || !s.from || !s.to) continue;
+    const key = tripId + "|" + (s.from.stopId || s.from.name) + "|" + s.departure;
+    if (seen.has(key)) continue; seen.add(key);
+    const color = colorOf(line, s);
+    const pts = decodePoly(s.polyline, s.from) || [[s.from.lat, s.from.lon], [s.to.lat, s.to.lon]];
+    const seg = { line, color, tripId, pts, from: s.from, to: s.to, realTime: !!s.realTime,
+      dep: t(s.departure), arr: t(s.arrival), sDep: t(s.scheduledDeparture), sArr: t(s.scheduledArrival) };
+    if (!byTrip.has(tripId)) byTrip.set(tripId, []);
+    byTrip.get(tripId).push(seg);
+    addNetwork(seg);
+  }
+  for (const arr of byTrip.values()) arr.sort((a, b) => a.dep - b.dep);
+  if (!merge) segsByTrip = byTrip;
+  else for (const [k, v] of byTrip) if (!segsByTrip.has(k)) segsByTrip.set(k, v);
+  buildChips();
+}
+function addNetwork(seg) {
+  const k = seg.line + "|" + (seg.from.stopId || seg.from.name) + "|" + (seg.to.stopId || seg.to.name);
+  if (!netFeatures.has(k)) {
+    netFeatures.set(k, { type:"Feature", properties:{ color: seg.color, line: seg.line },
+      geometry:{ type:"LineString", coordinates: seg.pts.map(p => [p[1], p[0]]) } });
+    netDirty = true;
+  }
+  for (const st of [seg.from, seg.to]) {
+    const sk = st.stopId || st.name;
+    if (stopFeatures.has(sk)) continue;
+    stopFeatures.set(sk, { type:"Feature", properties:{ name: st.name }, geometry:{ type:"Point", coordinates:[st.lon, st.lat] } });
+    netDirty = true;
+  }
+}
+function stateOf(segs, now) {
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i];
+    if (now >= s.dep && now <= s.arr) {
+      const a = pointAlong(s.pts, (now - s.dep) / ((s.arr - s.dep) || 1));
+      return { pos: a.p, dir: a.dir, seg: s, moving: true };
+    }
+    const nx = segs[i + 1];
+    if (nx && now > s.arr && now < nx.dep) return { pos: [s.to.lat, s.to.lon], dir: pointAlong(nx.pts, 0).dir, seg: nx, moving: false, at: s.to };
+  }
+  const first = segs[0], last = segs[segs.length - 1];
+  if (now < first.dep && first.dep - now < 90000)
+    return { pos: [first.from.lat, first.from.lon], dir: pointAlong(first.pts, 0).dir, seg: first, moving: false, at: first.from };
+  return null;
+}
+
+/* ---------- 3D-Körper der Bahnen ---------- */
+/* Grundriss: Rechteck mit spitzer Front in Fahrtrichtung. Maße in Metern, für Sichtbarkeit mit dem Zoom skaliert. */
+function footprint(lat, lon, dir, L, W) {
+  const len = Math.hypot(dir[0], dir[1]) || 1, ux = dir[0] / len, uy = dir[1] / len, px = -uy, py = ux;
+  const mLat = 111320, mLon = 111320 * Math.cos(lat * Math.PI / 180);
+  const P = (a, b) => [lon + (ux * a + px * b) / mLon, lat + (uy * a + py * b) / mLat];
+  const h = L / 2, w = W / 2, nose = h - W * 0.8;
+  return [[P(-h, -w), P(nose, -w), P(h, 0), P(nose, w), P(-h, w), P(-h, -w)]];
+}
+function trainSize() {
+  const z = map.getZoom(), mpp = 78271.5 * Math.cos(50.94 * Math.PI / 180) / Math.pow(2, z);
+  const L = Math.max(60, 30 * mpp), W = Math.max(5, 7 * mpp), H = Math.max(4, 5 * mpp);
+  return { L, W, H };
+}
+
+/* ---------- Karte ---------- */
+const map = new maplibregl.Map({
+  container: "map", style: STYLE, center: [6.9603, 50.9375], zoom: 13.4,
+  pitch: mode === "3d" ? 58 : 0, bearing: mode === "3d" ? -20 : 0,
+  maxPitch: mode === "3d" ? 75 : 0, antialias: mode === "3d", attributionControl: false,
+  pixelRatio: mode === "3d" ? devicePixelRatio : Math.min(devicePixelRatio, 1.5)
+});
+map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-left");
+map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
+map.on("error", e => {
+  if (!mapReady && !triedFallback && e && e.error && /style|fetch|Failed/i.test(String(e.error.message || e.error))) {
+    triedFallback = true; map.setStyle(STYLE_FALLBACK);
+  }
+});
+map.on("dragstart", () => { if (follow) { follow = false; updateSheet(); } });
+
+map.on("load", () => {
+  const style = map.getStyle();
+  const vecSrc = Object.keys(style.sources).find(k => style.sources[k].type === "vector") || "openmaptiles";
+  // Eigene, einheitliche Gebäude-Extrusion; vorhandene Gebäude-Layer ausblenden
+  for (const l of style.layers) if (l["source-layer"] === "building") map.setLayoutProperty(l.id, "visibility", "none");
+  const firstSymbol = style.layers.find(l => l.type === "symbol");
+  map.addSource("net", { type:"geojson", data:{ type:"FeatureCollection", features:[] } });
+  map.addSource("stops", { type:"geojson", data:{ type:"FeatureCollection", features:[] } });
+  map.addSource("trains", { type:"geojson", data:{ type:"FeatureCollection", features:[] } });
+  map.addLayer({ id:"net-casing", type:"line", source:"net", layout:{ "line-cap":"round", "line-join":"round" },
+    paint:{ "line-color": DARK ? "#000" : "#fff", "line-width":["interpolate",["linear"],["zoom"],11,3,16,9], "line-opacity":.8 } }, firstSymbol && firstSymbol.id);
+  map.addLayer({ id:"net", type:"line", source:"net", layout:{ "line-cap":"round", "line-join":"round" },
+    paint:{ "line-color":["get","color"], "line-width":["interpolate",["linear"],["zoom"],11,1.5,16,5], "line-opacity":.75 } }, firstSymbol && firstSymbol.id);
+  map.addLayer({ id:"buildings-3d", type:"fill-extrusion", source: vecSrc, "source-layer":"building", minzoom: 12,
+    paint:{
+      "fill-extrusion-color": DARK ? "#2a302d" : "#d7dad6",
+      "fill-extrusion-height": ["coalesce", ["get","render_height"], 10],
+      "fill-extrusion-base": ["coalesce", ["get","render_min_height"], 0],
+      "fill-extrusion-opacity": DARK ? .85 : .75 } });
+  map.addLayer({ id:"stops", type:"circle", source:"stops", minzoom: 12,
+    paint:{ "circle-radius":["interpolate",["linear"],["zoom"],12,2,16,5], "circle-color": DARK ? "#1b1f1d" : "#fff",
+      "circle-stroke-color": DARK ? "#ddd" : "#333", "circle-stroke-width":1, "circle-pitch-alignment":"map" } });
+  map.addLayer({ id:"train-body", type:"fill-extrusion", source:"trains",
+    paint:{ "fill-extrusion-color":["get","color"], "fill-extrusion-height":["get","h"], "fill-extrusion-base":["get","b"], "fill-extrusion-opacity":.95 },
+    filter:["==",["get","part"],"body"] });
+  map.addLayer({ id:"train-roof", type:"fill-extrusion", source:"trains",
+    paint:{ "fill-extrusion-color":["get","color"], "fill-extrusion-height":["get","h"], "fill-extrusion-base":["get","b"], "fill-extrusion-opacity":.95 },
+    filter:["==",["get","part"],"roof"] });
+  // 2D-Bahnen: einfacher Punkt in Linienfarbe, Rand = Pünktlichkeit, Liniennummer als Text
+  map.addSource("trains2d", { type:"geojson", data:{ type:"FeatureCollection", features:[] } });
+  const symLayer = style.layers.find(l => l.type === "symbol" && l.layout && Array.isArray(l.layout["text-font"]) && typeof l.layout["text-font"][0] === "string");
+  const font = symLayer ? symLayer.layout["text-font"] : ["Noto Sans Regular"];
+  map.addLayer({ id:"train-dot", type:"circle", source:"trains2d",
+    paint:{ "circle-radius":["interpolate",["linear"],["zoom"],11,7,15,11], "circle-color":["get","color"],
+      "circle-stroke-color":["get","ring"], "circle-stroke-width":3, "circle-opacity":["get","op"], "circle-stroke-opacity":["get","op"] } });
+  map.addLayer({ id:"train-num", type:"symbol", source:"trains2d",
+    layout:{ "text-field":["get","line"], "text-font": font, "text-size":["interpolate",["linear"],["zoom"],11,9,15,12],
+      "text-allow-overlap":true, "text-ignore-placement":true },
+    paint:{ "text-color":"#ffffff" } });
+  try { map.setLight({ anchor:"map", position:[1.4, 200, 35], intensity: DARK ? .35 : .45, color:"#ffffff" }); } catch (_) {}
+
+  for (const id of ["train-body", "train-roof", "train-dot"]) {
+    map.on("click", id, e => { if (e.features[0]) openSheet(e.features[0].properties.tripId); });
+    map.on("mouseenter", id, () => map.getCanvas().style.cursor = "pointer");
+    map.on("mouseleave", id, () => map.getCanvas().style.cursor = "");
+  }
+  mapReady = true;
+  setMode(mode, true);
+  poll().then(buildNetworkOnce);
+  setInterval(poll, POLL_MS);
+  requestAnimationFrame(frame);
+});
+
+/* ---------- Darstellung (läuft mit ~30 Bildern/s) ---------- */
+let lastFrame = 0, lastStatus = 0;
+function frame(ts) {
+  requestAnimationFrame(frame);
+  // 3D: ~30 Bilder/s für flüssige Fahrt. 2D: 1 Aktualisierung pro Sekunde.
+  if (ts - lastFrame < (mode === "3d" ? 33 : 1000)) return;
+  lastFrame = ts;
+  render();
+}
+function render() {
+  if (!mapReady) return;
+  const now = Date.now(), showPlan = $("#optPlan").checked;
+  const showLbl = $("#optLabels").checked && map.getZoom() >= 13.2;
+  if (netDirty) {
+    netDirty = false;
+    map.getSource("net").setData({ type:"FeatureCollection", features:[...netFeatures.values()] });
+    map.getSource("stops").setData({ type:"FeatureCollection", features:[...stopFeatures.values()] });
+  }
+  const { L, W, H } = trainSize();
+  const feats = [], live = new Set(); let n = 0, nRT = 0, followPos = null;
+  for (const [tripId, segs] of segsByTrip) {
+    const line = segs[0].line;
+    if (!enabledLines.has(line)) continue;
+    const st = stateOf(segs, now);
+    if (!st) continue;
+    const rt = segs.some(s => s.realTime);
+    if (!rt && !showPlan) continue;
+    n++; if (rt) nRT++;
+    const seg = st.seg, di = delayInfo(seg.arr, seg.sArr, seg.realTime);
+    const sel = tripId === selectedTrip, k = sel ? 1.35 : 1;
+    const [lat, lon] = st.pos;
+    if (sel) followPos = [lon, lat];
+    if (mode === "2d") {
+      feats.push({ type:"Feature", properties:{ tripId, line, color: segs[0].color, ring: sel ? (DARK ? "#ffffff" : "#000000") : di.col, op: rt ? 1 : .6 },
+        geometry:{ type:"Point", coordinates:[lon, lat] } });
+    } else {
+    feats.push({ type:"Feature", properties:{ tripId, part:"body", color: segs[0].color, b: 0.4, h: H * k },
+      geometry:{ type:"Polygon", coordinates: footprint(lat, lon, st.dir, L * k, W * k) } });
+    feats.push({ type:"Feature", properties:{ tripId, part:"roof", color: di.col, b: H * k, h: H * k * (sel ? 1.6 : 1.35) },
+      geometry:{ type:"Polygon", coordinates: footprint(lat, lon, st.dir, L * k * 0.8, W * k * 0.75) } });
+    }
+
+    if (showLbl || sel) {
+      live.add(tripId);
+      const html = `<b>${line}</b> → ${esc(seg.to.name)} <span class="t">${hhmm(seg.arr)}</span><br><span class="${di.cls}">${esc(di.txt)}</span>`;
+      let lb = labels.get(tripId);
+      if (!lb) {
+        const el = document.createElement("div"); el.className = "lbl";
+        lb = { el, html:"", m: new maplibregl.Marker({ element: el, anchor:"bottom", pitchAlignment:"viewport", rotationAlignment:"viewport" }).setLngLat([lon, lat]).addTo(map) };
+        labels.set(tripId, lb);
+      } else lb.m.setLngLat([lon, lat]);
+      if (lb.html !== html) { lb.html = html; lb.el.innerHTML = html; lb.el.style.setProperty("--c", segs[0].color); }
+    }
+  }
+  for (const [id, lb] of labels) if (!live.has(id)) { lb.m.remove(); labels.delete(id); }
+  map.getSource(mode === "2d" ? "trains2d" : "trains").setData({ type:"FeatureCollection", features: feats });
+  if (follow && followPos) map.jumpTo({ center: followPos });
+
+  if (now - lastStatus > 1000) {
+    lastStatus = now;
+    const ago = lastOk ? Math.round((now - lastOk) / 1000) : null;
+    $("#status").innerHTML = errorMsg ? `<span class="d-late">${esc(errorMsg)}</span>`
+      : lastOk ? `${n} Bahnen · ${nRT} mit Echtzeit<br>Stand vor ${ago} s` : "Lade Fahrplandaten…";
+    if (selectedTrip) updateSheet();
+  }
+}
+
+function buildChips() {
+  const nav = $("#lines");
+  if (nav.childElementCount === KVB_LINES.length + 1) {
+    nav.querySelectorAll(".chip[data-l]").forEach(b => b.style.setProperty("--c", lineColors[b.dataset.l] || FALLBACK_COLORS[b.dataset.l]));
+    return;
+  }
+  nav.innerHTML = "";
+  const all = document.createElement("button");
+  all.className = "chip all"; all.textContent = "Alle"; all.type = "button";
+  all.onclick = () => {
+    const allOn = enabledLines.size === KVB_LINES.length;
+    enabledLines.clear(); if (!allOn) KVB_LINES.forEach(l => enabledLines.add(l));
+    nav.querySelectorAll(".chip[data-l]").forEach(b => b.classList.toggle("off", !enabledLines.has(b.dataset.l)));
+    applyNetFilter();
+  };
+  nav.appendChild(all);
+  for (const l of KVB_LINES) {
+    const b = document.createElement("button");
+    b.className = "chip"; b.type = "button"; b.dataset.l = l; b.textContent = l;
+    b.style.setProperty("--c", lineColors[l] || FALLBACK_COLORS[l]);
+    b.onclick = () => { enabledLines.has(l) ? enabledLines.delete(l) : enabledLines.add(l); b.classList.toggle("off", !enabledLines.has(l)); applyNetFilter(); };
+    nav.appendChild(b);
+  }
+}
+function applyNetFilter() {
+  if (!mapReady) return;
+  const f = ["in", ["get","line"], ["literal", [...enabledLines]]];
+  map.setFilter("net", f); map.setFilter("net-casing", f);
+}
+
+/* ---------- Detailblatt ---------- */
+async function openSheet(tripId) {
+  selectedTrip = tripId; tripDetail = undefined; follow = false;
+  updateSheet();
+  const d = await fetchTripDetail(tripId);
+  if (selectedTrip === tripId) { tripDetail = d; updateSheet(); }
+}
+function updateSheet() {
+  const sheet = $("#sheet"), segs = segsByTrip.get(selectedTrip);
+  if (!segs) { sheet.hidden = true; selectedTrip = null; follow = false; return; }
+  const now = Date.now(), st = stateOf(segs, now);
+  const leg = tripDetail && tripDetail.legs && tripDetail.legs.find(l => l.mode !== "WALK") || null;
+  const headsign = (leg && (leg.headsign || (leg.to && leg.to.name))) || segs[segs.length - 1].to.name;
+  const seg = st && st.seg ? st.seg : segs[segs.length - 1];
+  const di = delayInfo(seg.arr, seg.sArr, seg.realTime);
+  let stopsHtml = "";
+  if (leg) {
+    stopsHtml = [leg.from, ...(leg.intermediateStops || []), leg.to].filter(Boolean)
+      .filter(p => (t(p.arrival) || t(p.departure)) >= now - 30000)
+      .map(p => {
+        const a = t(p.arrival) || t(p.departure), s = t(p.scheduledArrival) || t(p.scheduledDeparture);
+        const dd = delayInfo(a, s, leg.realTime);
+        const dtxt = dd.min === null ? "" : dd.min === 0 ? "±0" : (dd.min > 0 ? "+" : "") + dd.min;
+        return `<li><span>${esc(p.name)}</span><span class="t">${hhmm(a)}</span><span class="dl t ${dd.cls}">${dtxt}</span></li>`;
+      }).join("");
+  }
+  sheet.innerHTML = `
+    <div class="sh-head">
+      <div class="badge" style="--c:${segs[0].color}">${segs[0].line}</div>
+      <div class="sh-title"><b>Richtung ${esc(headsign)}</b><small>${st && !st.moving && st.at ? "hält an " + esc(st.at.name) : "unterwegs"}</small></div>
+      <button id="follow" class="btn${follow ? " on" : ""}" type="button">${follow ? "Folgt" : "Mitfahren"}</button>
+      <button id="close" type="button" aria-label="Schließen">×</button>
+    </div>
+    <div class="next">
+      <span class="cap">Nächster Halt</span>
+      <span class="stop">${esc(seg.to.name)}</span><span class="time">${hhmm(seg.arr)}</span>
+      <span class="dly ${di.cls}">${esc(di.txt)}${!isNaN(seg.sArr) && di.min ? ` <span class="t" style="color:var(--muted);font-weight:400">(Plan ${hhmm(seg.sArr)})</span>` : ""}</span>
+    </div>
+    ${leg ? `<ul class="stops">${stopsHtml || '<li class="muted">Keine weiteren Halte.</li>'}</ul>`
+          : `<div class="muted">${tripDetail === undefined ? "Lade weitere Halte…" : "Weitere Halte nicht verfügbar."}</div>`}`;
+  sheet.hidden = false;
+  $("#close").onclick = () => { selectedTrip = null; follow = false; sheet.hidden = true; };
+  $("#follow").onclick = () => {
+    follow = !follow;
+    if (follow && st) map.easeTo({ center:[st.pos[1], st.pos[0]], zoom: Math.max(map.getZoom(), 15.5), pitch: mode === "3d" ? 62 : 0, duration: 800 });
+    updateSheet();
+  };
+}
+
+/* ---------- Ablauf ---------- */
+async function poll() {
+  const now = Date.now();
+  try {
+    ingest(await fetchArea(BBOX, now - LIVE_WINDOW_MIN * 60000, now + LIVE_WINDOW_MIN * 60000), false);
+    lastOk = Date.now(); errorMsg = "";
+  } catch (e) {
+    errorMsg = e.status ? `Fahrplandaten: Fehler ${e.status}. Neuer Versuch in 20 s.`
+                        : "Keine Verbindung zu den Fahrplandaten. Neuer Versuch in 20 s.";
+    console.error(e);
+  }
+}
+async function buildNetworkOnce() {
+  const now = Date.now();
+  try { ingest(await fetchArea(BBOX, now, now + 15 * 60000), true); } catch (e) { console.warn("Netz:", e); }
+}
+/* ---------- Umschalten 3D / 2D ---------- */
+function setMode(m, initial) {
+  mode = m;
+  try { localStorage.setItem("kvb-mode", m); } catch (_) {}
+  $("#mode3d").setAttribute("aria-pressed", m === "3d");
+  $("#mode2d").setAttribute("aria-pressed", m === "2d");
+  $("#lblBuildings").classList.toggle("dis", m === "2d");
+  if (!mapReady) return;
+  const is3d = m === "3d", vis = v => v ? "visible" : "none";
+  map.setLayoutProperty("buildings-3d", "visibility", vis(is3d && $("#optBuildings").checked));
+  for (const id of ["train-body", "train-roof"]) map.setLayoutProperty(id, "visibility", vis(is3d));
+  for (const id of ["train-dot", "train-num"]) map.setLayoutProperty(id, "visibility", vis(!is3d));
+  // Inhalt der jeweils anderen Ebene leeren, damit sie nicht mitgerechnet wird
+  map.getSource(is3d ? "trains2d" : "trains").setData({ type:"FeatureCollection", features:[] });
+  if (map.setPixelRatio) map.setPixelRatio(is3d ? devicePixelRatio : Math.min(devicePixelRatio, 1.5));
+  if (is3d) {
+    map.setMaxPitch(75);
+    map.dragRotate.enable(); map.touchZoomRotate.enableRotation(); map.touchPitch && map.touchPitch.enable();
+    if (!initial) map.easeTo({ pitch: 58, bearing: -20, duration: 900 });
+  } else {
+    map.dragRotate.disable(); map.touchZoomRotate.disableRotation(); map.touchPitch && map.touchPitch.disable();
+    map.jumpTo({ pitch: 0, bearing: 0 });
+    map.setMaxPitch(0);
+  }
+  lastFrame = 0;
+  render();
+}
+$("#mode3d").addEventListener("click", () => setMode("3d"));
+$("#mode2d").addEventListener("click", () => setMode("2d"));
+$("#optBuildings").addEventListener("change", e => { if (mapReady) map.setLayoutProperty("buildings-3d", "visibility", e.target.checked && mode === "3d" ? "visible" : "none"); });
+setMode(mode);
+buildChips();
+</script>
+</body>
+</html>
